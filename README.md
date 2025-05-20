@@ -1,5 +1,4 @@
 # XR-UI-Tools
-XR-UI-Tools
 
 ![XR-UI-Tools](screenshot.png)
 [XR-UI-Tools](https://XR-UI-Tools.netlify.app/)
