@@ -1,0 +1,516 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Interactive Canvas UI</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #333; }
+        canvas { display: block; /* Prevents default canvas margin */ }
+    </style>
+</head>
+<body>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three/examples/jsm/"
+        }
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // --- Global Variables ---
+    let scene, camera, renderer, controls;
+    let planeMesh, // The 3D plane that will display our 2D UI
+        canvasTexture, // The texture generated from the 2D canvas
+        canvas, // The 2D canvas element used for drawing the UI
+        ctx; // The 2D rendering context of the canvas
+
+    // Mouse interaction utilities
+    const raycaster = new THREE.Raycaster();
+    const mouseNDC = new THREE.Vector2(); // Normalized Device Coordinates for raycasting
+    const canvasMousePosition = { x: 0, y: 0 }; // Mouse coordinates on the 2D canvas
+
+    // --- UI Configuration ---
+
+    // Dimensions for the 2D canvas (maintains a 16:9 aspect ratio)
+    const canvasWidth = 640;
+    const canvasHeight = 360;
+
+    // Dimensions for the 3D plane in the scene
+    const planeWidth3D = 4; // Arbitrary width in 3D units
+    const planeHeight3D = planeWidth3D * (canvasHeight / canvasWidth); // Height to maintain aspect ratio
+
+    // Configuration for the text display area
+    const textFieldConfig = {
+        x: canvasWidth * 0.05, // Position from left
+        y: canvasHeight * 0.1,  // Position from top
+        width: canvasWidth * 0.7, // Width of the text area
+        height: canvasHeight * 0.8, // Height of the text area
+        padding: 10, // Internal padding
+        font: '16px Arial', // Font style for the text
+        lineHeight: 20, // Height of each line of text
+        textColor: 'white', // Color of the text
+        backgroundColor: 'rgba(0, 0, 0, 0.5)', // Background color of the text area
+    };
+
+    // Configuration for the scrollbar
+    const scrollbarConfig = {
+        x: textFieldConfig.x + textFieldConfig.width + 5, // Positioned to the right of the text field
+        y: textFieldConfig.y, // Aligned with the top of the text field
+        width: 15, // Width of the scrollbar
+        height: textFieldConfig.height, // Height of the scrollbar (same as text field)
+        trackColor: 'rgba(255, 255, 255, 0.1)', // Color of the scrollbar track
+        thumbColor: 'rgba(255, 255, 255, 0.4)', // Color of the scrollbar thumb
+        thumbHoverColor: 'rgba(255, 255, 255, 0.7)', // Color of thumb when hovered or dragged
+        thumbPath: null, // A Path2D object for hit-testing the thumb
+        minThumbHeight: 20, // Minimum height for the scrollbar thumb
+    };
+
+    // --- UI State Variables ---
+    let longTextContent = "This is a very long string of text designed to demonstrate the scrolling functionality within a custom text field rendered on a 2D canvas, which is then used as a texture in a Three.js scene. \n\nNew paragraphs are respected. We need enough content to make scrolling necessary. Let's add some more. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. \n\nAnother section: The quick brown fox jumps over the lazy dog. This sentence is repeated multiple times to increase the length. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. \n\nFinal points: Implementing custom UI elements like this requires careful management of state, drawing logic, and user interactions. It's a good exercise in understanding 2D canvas capabilities and how they can integrate with 3D environments. This should be enough text now. Let's hope this works! One more line for good measure. And another. And another. And another. This will ensure the scrollbar is definitely needed and has room to move.";
+    let wrappedTextLines = []; // Array to store lines of text after wrapping
+    let totalTextContentHeight = 0; // Total pixel height of all wrapped text
+    let currentScrollOffset = 0; // Current vertical scroll position in pixels
+    let maxScrollOffset = 0; // Maximum possible scroll offset
+
+    let needsCanvasRedraw = true; // Flag to indicate if the canvas needs to be re-rendered
+    let isDraggingScrollbarThumb = false; // True if the user is currently dragging the scrollbar thumb
+    let isScrollbarThumbHovered = false; // True if the mouse is hovering over the scrollbar thumb
+    let lastMouseYForDrag = 0; // Stores the last mouse Y position during a drag operation
+
+    // Simple shapes for illustrative purposes (e.g., a title bar)
+    const decorativeShapes = [
+        {
+            id: 'titleBox', type: 'rect',
+            x: canvasWidth * 0.05, y: canvasHeight * 0.02,
+            width: canvasWidth * 0.9, height: canvasHeight * 0.07,
+            color: 'rgba(100, 100, 200, 0.7)', path: null
+        }
+    ];
+    let highlightedShapeId = null; // ID of any hovered decorative shape
+
+    /**
+     * Initializes the Three.js scene, camera, renderer, and UI elements.
+     */
+    function initializeScene() {
+        // Scene setup
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x333333); // Dark gray background
+
+        // Camera setup
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, planeWidth3D * 1.5); // Position camera to view the UI plane
+
+        // Renderer setup
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // OrbitControls setup (for camera manipulation)
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; // Smooth camera movement
+        controls.target.set(0, 0, 0); // Camera orbits around the scene origin
+
+        // Create the interactive UI plane
+        createInteractiveUIPlane();
+        // Prepare text content for display (wrapping, calculating heights)
+        prepareTextContent();
+
+        // Event listeners for interactivity
+        window.addEventListener('resize', onWindowResize);
+        renderer.domElement.addEventListener('mousemove', onCanvasMouseMove);
+        renderer.domElement.addEventListener('mousedown', onCanvasMouseDown);
+        // Listen on the document for mouseup to catch drags that end outside the canvas
+        document.addEventListener('mouseup', onDocumentMouseUp);
+        
+        // Start the animation loop
+        animate();
+    }
+
+    /**
+     * Prepares the text content by wrapping it and calculating necessary dimensions.
+     */
+    function prepareTextContent() {
+        // Ensure the 2D canvas context is available
+        if (!ctx && canvas) ctx = canvas.getContext('2d');
+        if (!ctx) return; // Exit if context cannot be obtained
+
+        // Wrap the long text string to fit the text field width
+        wrappedTextLines = wrapText(ctx, longTextContent, textFieldConfig.width - 2 * textFieldConfig.padding, textFieldConfig.font);
+        // Calculate the total height of the wrapped text
+        totalTextContentHeight = wrappedTextLines.length * textFieldConfig.lineHeight;
+        // Calculate the maximum scrollable distance
+        maxScrollOffset = Math.max(0, totalTextContentHeight - (textFieldConfig.height - 2 * textFieldConfig.padding));
+        // Ensure the current scroll offset is within valid bounds
+        currentScrollOffset = Math.max(0, Math.min(currentScrollOffset, maxScrollOffset));
+        
+        needsCanvasRedraw = true; // Mark canvas for redraw
+    }
+
+    /**
+     * Wraps a given text string to fit within a specified maximum width.
+     * @param {CanvasRenderingContext2D} context - The 2D canvas rendering context.
+     * @param {string} text - The text string to wrap.
+     * @param {number} maxWidth - The maximum width (in pixels) for each line.
+     * @param {string} font - The font string (e.g., "16px Arial").
+     * @returns {string[]} An array of strings, where each string is a line of wrapped text.
+     */
+    function wrapText(context, text, maxWidth, font) {
+        context.font = font; // Set font for accurate measurement
+        const lines = [];
+        const paragraphs = text.split('\n'); // Respect explicit newline characters
+
+        for (const paragraph of paragraphs) {
+            if (paragraph.trim() === "") {
+                lines.push(""); // Preserve empty lines for paragraph spacing
+                continue;
+            }
+            let currentLine = '';
+            const words = paragraph.split(' ');
+            for (let i = 0; i < words.length; i++) {
+                const word = words[i];
+                const testLine = currentLine + word + ' ';
+                const metrics = context.measureText(testLine);
+                const testWidth = metrics.width;
+
+                // If adding the word exceeds max width and the line isn't empty, start a new line
+                if (testWidth > maxWidth && currentLine.length > 0) {
+                    lines.push(currentLine.trim());
+                    currentLine = word + ' ';
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            lines.push(currentLine.trim()); // Add the last line of the paragraph
+        }
+        return lines;
+    }
+
+    /**
+     * Draws all UI elements (text field, scrollbar, decorative shapes) onto the 2D canvas.
+     */
+    function drawUIToCanvas() {
+        if (!ctx) return; // Exit if canvas context is not available
+
+        // Clear the canvas with a background color for the "screen"
+        ctx.fillStyle = 'rgba(30, 30, 50, 1)'; 
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // Draw decorative shapes (e.g., title bar)
+        decorativeShapes.forEach(shape => {
+            if (!shape.path) { // Create Path2D object if it doesn't exist
+                shape.path = new Path2D();
+                if (shape.type === 'rect') shape.path.rect(shape.x, shape.y, shape.width, shape.height);
+            }
+            // Use a different color if the shape is highlighted (optional)
+            ctx.fillStyle = (shape.id === highlightedShapeId) ? 'rgba(150,150,250,0.9)' : shape.color;
+            if (shape.path) ctx.fill(shape.path);
+        });
+        
+        // Draw a title text
+        ctx.fillStyle = 'white';
+        ctx.font = `bold ${canvasHeight * 0.05}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Interactive Text Panel', canvasWidth / 2, canvasHeight * 0.055);
+
+        // --- Draw Text Field ---
+        ctx.fillStyle = textFieldConfig.backgroundColor;
+        ctx.fillRect(textFieldConfig.x, textFieldConfig.y, textFieldConfig.width, textFieldConfig.height);
+
+        // Save canvas state before clipping for text area
+        ctx.save();
+        ctx.beginPath();
+        // Define clipping region (text area with padding)
+        ctx.rect(textFieldConfig.x + textFieldConfig.padding,
+                 textFieldConfig.y + textFieldConfig.padding,
+                 textFieldConfig.width - 2 * textFieldConfig.padding,
+                 textFieldConfig.height - 2 * textFieldConfig.padding);
+        ctx.clip(); // Apply clipping
+
+        // Set text properties
+        ctx.font = textFieldConfig.font;
+        ctx.fillStyle = textFieldConfig.textColor;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top'; // Important for consistent line positioning
+
+        // Determine which lines of text are currently visible
+        const firstVisibleLineIndex = Math.floor(currentScrollOffset / textFieldConfig.lineHeight);
+        const lastVisibleLineRenderOffset = currentScrollOffset + (textFieldConfig.height - 2 * textFieldConfig.padding);
+        const lastVisibleLineIndex = Math.ceil(lastVisibleLineRenderOffset / textFieldConfig.lineHeight);
+
+        // Draw only the visible lines of text
+        for (let i = firstVisibleLineIndex; i < Math.min(lastVisibleLineIndex + 1, wrappedTextLines.length); i++) {
+            const lineYPosition = textFieldConfig.y + textFieldConfig.padding + (i * textFieldConfig.lineHeight) - currentScrollOffset;
+            // Additional check to ensure line is within the visible padded area
+            if (lineYPosition + textFieldConfig.lineHeight > textFieldConfig.y + textFieldConfig.padding &&
+                lineYPosition < textFieldConfig.y + textFieldConfig.height - textFieldConfig.padding) {
+                 ctx.fillText(wrappedTextLines[i], textFieldConfig.x + textFieldConfig.padding, lineYPosition);
+            }
+        }
+        ctx.restore(); // Restore canvas state (remove clipping)
+
+        // --- Draw Scrollbar (if text content exceeds visible area) ---
+        if (totalTextContentHeight > textFieldConfig.height - 2 * textFieldConfig.padding) {
+            // Draw scrollbar track
+            ctx.fillStyle = scrollbarConfig.trackColor;
+            ctx.fillRect(scrollbarConfig.x, scrollbarConfig.y, scrollbarConfig.width, scrollbarConfig.height);
+
+            // Calculate scrollbar thumb height
+            const visibleContentHeight = textFieldConfig.height - 2 * textFieldConfig.padding;
+            const contentToTotalHeightRatio = visibleContentHeight / totalTextContentHeight;
+            let thumbHeight = scrollbarConfig.height * contentToTotalHeightRatio;
+            thumbHeight = Math.max(scrollbarConfig.minThumbHeight, thumbHeight); // Enforce minimum thumb height
+            thumbHeight = Math.min(scrollbarConfig.height, thumbHeight); // Thumb cannot be taller than track
+
+            // Calculate scrollbar thumb Y position
+            const scrollProgressRatio = maxScrollOffset > 0 ? currentScrollOffset / maxScrollOffset : 0;
+            let thumbYPosition = scrollbarConfig.y + scrollProgressRatio * (scrollbarConfig.height - thumbHeight);
+
+            // Create Path2D for the thumb for easy hit-testing
+            scrollbarConfig.thumbPath = new Path2D();
+            scrollbarConfig.thumbPath.rect(scrollbarConfig.x, thumbYPosition, scrollbarConfig.width, thumbHeight);
+
+            // Draw scrollbar thumb (highlighted if hovered or dragged)
+            ctx.fillStyle = (isDraggingScrollbarThumb || isScrollbarThumbHovered) ? scrollbarConfig.thumbHoverColor : scrollbarConfig.thumbColor;
+            ctx.fill(scrollbarConfig.thumbPath);
+        } else {
+            scrollbarConfig.thumbPath = null; // No scrollbar needed, so no thumb path
+        }
+
+        // Mark the Three.js texture for update
+        if (canvasTexture) {
+            canvasTexture.needsUpdate = true;
+        }
+        needsCanvasRedraw = false; // Reset redraw flag
+    }
+
+    /**
+     * Creates the 2D canvas, its texture, and the 3D plane mesh.
+     */
+    function createInteractiveUIPlane() {
+        // Create the 2D canvas element
+        canvas = document.createElement('canvas');
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        ctx = canvas.getContext('2d'); // Get the 2D rendering context
+
+        // Create a Three.js texture from the canvas
+        canvasTexture = new THREE.CanvasTexture(canvas);
+        canvasTexture.colorSpace = THREE.SRGBColorSpace; // Ensure correct color representation
+
+        // Create the 3D plane geometry and material
+        const planeGeometry = new THREE.PlaneGeometry(planeWidth3D, planeHeight3D);
+        const planeMaterial = new THREE.MeshBasicMaterial({
+            map: canvasTexture, // Apply the canvas texture
+            transparent: true, // Enable transparency if UI has transparent parts
+            side: THREE.DoubleSide // Make plane visible from both sides
+        });
+        planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+        scene.add(planeMesh); // Add the plane to the scene
+    }
+
+    /**
+     * Calculates the mouse position on the 2D canvas based on a browser event.
+     * @param {MouseEvent} event - The mouse event.
+     * @returns {boolean} True if the mouse is over the 3D plane, false otherwise.
+     */
+    function getMousePositionOnCanvas(event) {
+        // Determine effective mouse coordinates relative to the renderer's canvas
+        // This handles cases where the event target might be the document (e.g., global mouseup)
+        const rendererCanvasRect = renderer.domElement.getBoundingClientRect();
+        const effectiveMouseX = event.clientX - rendererCanvasRect.left;
+        const effectiveMouseY = event.clientY - rendererCanvasRect.top;
+
+        // Convert to Normalized Device Coordinates (NDC) for Three.js raycasting
+        mouseNDC.x = (effectiveMouseX / renderer.domElement.clientWidth) * 2 - 1;
+        mouseNDC.y = -(effectiveMouseY / renderer.domElement.clientHeight) * 2 + 1;
+
+        // Update the raycaster with the camera and mouse position
+        raycaster.setFromCamera(mouseNDC, camera);
+        // Find intersections with the UI plane
+        const intersects = raycaster.intersectObject(planeMesh);
+
+        if (intersects.length > 0) {
+            const uv = intersects[0].uv; // Get UV coordinates of the intersection
+            if (uv) {
+                // Convert UV coordinates to pixel coordinates on our 2D canvas
+                canvasMousePosition.x = uv.x * canvasWidth;
+                canvasMousePosition.y = (1 - uv.y) * canvasHeight; // UV.y is inverted relative to canvas Y
+                return true; // Mouse is on the plane
+            }
+        }
+        return false; // Mouse is not on the plane
+    }
+
+    /**
+     * Handles mouse move events on the renderer's canvas.
+     * Updates hover states for UI elements.
+     * Handles scrollbar thumb dragging.
+     * @param {MouseEvent} event - The mouse move event.
+     */
+    function onCanvasMouseMove(event) {
+        if (!planeMesh || !ctx) return;
+
+        if (!isDraggingScrollbarThumb) {
+            // Update hover states if not currently dragging
+            const isOnPlane = getMousePositionOnCanvas(event);
+            let previousThumbHoverState = isScrollbarThumbHovered;
+            isScrollbarThumbHovered = false; // Reset hover state
+            document.body.style.cursor = 'default'; // Default cursor
+
+            if (isOnPlane) {
+                // Check for hover over scrollbar thumb
+                if (scrollbarConfig.thumbPath && ctx.isPointInPath(scrollbarConfig.thumbPath, canvasMousePosition.x, canvasMousePosition.y)) {
+                    isScrollbarThumbHovered = true;
+                    document.body.style.cursor = 'pointer'; // Change cursor to indicate interactivity
+                }
+
+                // Check for hover over other decorative shapes (optional)
+                let currentHoveredShape = null;
+                decorativeShapes.forEach(shape => {
+                    if (shape.path && ctx.isPointInPath(shape.path, canvasMousePosition.x, canvasMousePosition.y)) {
+                        currentHoveredShape = shape.id;
+                        // Example: document.body.style.cursor = 'grab';
+                    }
+                });
+                if (highlightedShapeId !== currentHoveredShape) {
+                    highlightedShapeId = currentHoveredShape;
+                    needsCanvasRedraw = true;
+                }
+            }
+            // Redraw if thumb hover state changed
+            if (previousThumbHoverState !== isScrollbarThumbHovered) needsCanvasRedraw = true;
+        } else {
+            // Handle scrollbar thumb dragging
+            const rendererCanvasRect = renderer.domElement.getBoundingClientRect();
+            const currentMouseYOnCanvas = event.clientY - rendererCanvasRect.top;
+            const deltaY = currentMouseYOnCanvas - lastMouseYForDrag;
+            lastMouseYForDrag = currentMouseYOnCanvas;
+
+            // Calculate actual thumb height (as calculated during drawing)
+            let actualThumbHeight = scrollbarConfig.minThumbHeight;
+            if (totalTextContentHeight > textFieldConfig.height - 2 * textFieldConfig.padding) {
+                const visibleContentHeight = textFieldConfig.height - 2 * textFieldConfig.padding;
+                const contentRatio = visibleContentHeight / totalTextContentHeight;
+                actualThumbHeight = Math.max(scrollbarConfig.minThumbHeight, scrollbarConfig.height * contentRatio);
+                actualThumbHeight = Math.min(scrollbarConfig.height, actualThumbHeight);
+            }
+
+            const scrollableTrackPixelHeight = scrollbarConfig.height - actualThumbHeight;
+            if (scrollableTrackPixelHeight > 0) {
+                const scrollAmountRatio = deltaY / scrollableTrackPixelHeight;
+                currentScrollOffset += scrollAmountRatio * maxScrollOffset;
+            }
+
+            // Clamp scroll offset to valid bounds
+            currentScrollOffset = Math.max(0, Math.min(currentScrollOffset, maxScrollOffset));
+            needsCanvasRedraw = true;
+        }
+    }
+
+    /**
+     * Handles mouse down events on the renderer's canvas.
+     * Initiates scrollbar thumb dragging and disables OrbitControls.
+     * @param {MouseEvent} event - The mouse down event.
+     */
+    function onCanvasMouseDown(event) {
+        if (!planeMesh || !ctx || event.target !== renderer.domElement) return;
+
+        const isOnPlane = getMousePositionOnCanvas(event);
+
+        if (isOnPlane) {
+            // Check if the mousedown is on the scrollbar thumb
+            if (scrollbarConfig.thumbPath && ctx.isPointInPath(scrollbarConfig.thumbPath, canvasMousePosition.x, canvasMousePosition.y)) {
+                isDraggingScrollbarThumb = true;
+                
+                const rendererCanvasRect = renderer.domElement.getBoundingClientRect();
+                lastMouseYForDrag = event.clientY - rendererCanvasRect.top; // Store initial Y for drag delta
+
+                document.body.style.cursor = 'grabbing'; // Change cursor to indicate dragging
+                if (controls) controls.enabled = false; // Disable OrbitControls during drag
+                needsCanvasRedraw = true;
+            }
+        }
+    }
+
+    /**
+     * Handles mouse up events (globally on the document).
+     * Stops scrollbar thumb dragging and re-enables OrbitControls.
+     * @param {MouseEvent} event - The mouse up event.
+     */
+    function onDocumentMouseUp(event) {
+        if (isDraggingScrollbarThumb) {
+            isDraggingScrollbarThumb = false;
+            if (controls) controls.enabled = true; // Re-enable OrbitControls
+
+            // Update cursor and hover state based on mouse position at release
+            const rendererCanvasRect = renderer.domElement.getBoundingClientRect();
+            const effectiveMouseX = event.clientX - rendererCanvasRect.left;
+            const effectiveMouseY = event.clientY - rendererCanvasRect.top;
+
+            // Check if mouse is still within canvas bounds
+            if (effectiveMouseX >= 0 && effectiveMouseX <= renderer.domElement.clientWidth &&
+                effectiveMouseY >= 0 && effectiveMouseY <= renderer.domElement.clientHeight) {
+                
+                // Simulate a mouse move to correctly update hover states (cursor, thumb highlight)
+                const simulatedEvent = new MouseEvent('mousemove', {
+                    bubbles: true, cancelable: true, view: window,
+                    clientX: event.clientX, clientY: event.clientY
+                });
+                // Dispatch to renderer's canvas for onCanvasMouseMove to handle
+                renderer.domElement.dispatchEvent(simulatedEvent);
+            } else {
+                // Mouse released outside the canvas
+                document.body.style.cursor = 'default';
+                isScrollbarThumbHovered = false; // Ensure hover state is reset
+            }
+            needsCanvasRedraw = true; // Redraw to reflect any state changes
+        }
+    }
+
+    /**
+     * Handles window resize events.
+     * Updates camera aspect ratio, renderer size, and re-prepares text content.
+     */
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        prepareTextContent(); // Re-wrap text and calculate dimensions based on new size
+        needsCanvasRedraw = true;
+    }
+
+    /**
+     * The main animation loop.
+     * Redraws the canvas if needed, updates OrbitControls, and renders the scene.
+     */
+    function animate() {
+        requestAnimationFrame(animate); // Request the next frame
+
+        if (needsCanvasRedraw) {
+            drawUIToCanvas(); // Redraw the 2D UI canvas if there are changes
+        }
+
+        // Update OrbitControls only if they are enabled
+        if (controls && controls.enabled) {
+            controls.update();
+        }
+        
+        renderer.render(scene, camera); // Render the 3D scene
+    }
+
+    // --- Start the application ---
+    initializeScene();
+
+</script>
+</body>
+</html>
